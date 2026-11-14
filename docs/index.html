@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>画像→Point Curve 変換 | Image to Point Curve</title>
+<meta name="description" content="画像から輪郭を抽出し、DesignSpark Mechanical で読み込める Point Curve 形式の TXT に変換します。処理はすべてブラウザ内で完結します。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>画像 → Point Curve 変換</h1>
+<p class="subtitle">画像から輪郭を抽出し、DesignSpark Mechanical で読み込める Point Curve 形式の TXT に変換します。寸法は mm。画像はサーバーへ送信されず、<strong>ブラウザ内だけで処理</strong>します。</p>
+
+<main class="wrap">
+  <section class="workspace" aria-label="プレビュー">
+    <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="画像ファイルを選択">
+      <div class="drop-msg">
+        <strong>画像をここにドラッグ＆ドロップ</strong><br>
+        またはタップしてファイルを選択（PNG / JPEG / WebP）
+      </div>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+    </div>
+
+    <div id="previews" class="previews" hidden>
+      <figure class="pv">
+        <figcaption>元画像 <span id="srcInfo" class="muted"></span></figcaption>
+        <div class="canvas-shell"><canvas id="srcCanvas"></canvas></div>
+      </figure>
+      <figure class="pv">
+        <figcaption>抽出した輪郭 <span id="resultInfo" class="muted"></span></figcaption>
+        <div class="canvas-shell checker"><canvas id="outCanvas"></canvas></div>
+        <div class="view-opts">
+          <label><input type="checkbox" id="showImage"> 元画像を重ねる</label>
+          <label><input type="checkbox" id="showPoints"> 点を表示</label>
+          <label><input type="checkbox" id="showFill" checked> 塗りつぶし</label>
+          <label id="showCircleLabel"><input type="checkbox" id="showCircle" checked> 外接円</label>
+        </div>
+      </figure>
+    </div>
+    <div class="status" id="status" role="status" aria-live="polite">画像を選択してください。</div>
+  </section>
+
+  <aside class="panel">
+    <div class="actions">
+      <button class="primary full" id="downloadTxt" disabled>point curve (.txt) をダウンロード</button>
+      <button id="chooseFile">画像を選択</button>
+      <button id="reset">初期値に戻す</button>
+    </div>
+
+    <div class="field" style="margin-top:14px">
+      <div class="field-title"><label for="txtPolyline">DSM向けTXTの読み込み方式（Polyline）</label></div>
+      <select id="txtPolyline">
+        <option value="true" selected>True：折れ線（直線・角を維持）</option>
+        <option value="false">False：スプライン補間</option>
+      </select>
+      <div class="note">初期値は True。False にすると DSM で直線や角も滑らかに補間されることがあります。</div>
+    </div>
+
+    <h2>出力サイズ</h2>
+    <div class="field">
+      <div class="field-title"><label for="sizeMode">サイズの決め方</label></div>
+      <select id="sizeMode">
+        <option value="circle" selected>円に収める（直径を指定）</option>
+        <option value="image">画像全体の幅・高さを指定</option>
+      </select>
+    </div>
+    <div class="field" id="circleControls">
+      <div class="field-row"><span>直径</span><input id="outD" type="number" min="0.1" step="0.1" value="78.5"><span class="unit">mm</span></div>
+      <div class="note">抽出したすべての輪郭の点を囲む最小の円が、この直径になるように拡大縮小します。座標原点は円の中心、Y軸は上向きです。Polyline=False（スプライン補間）では、曲線が円からわずかにはみ出す可能性があります。</div>
+    </div>
+    <div class="field" id="imageControls" hidden>
+      <div class="field-row"><span>幅</span><input id="outW" type="number" min="0.1" step="0.1" value="100"><span class="unit">mm</span></div>
+      <div class="field-row"><span>高さ</span><input id="outH" type="number" min="0.1" step="0.1" value="100"><span class="unit">mm</span></div>
+      <div class="note">画像全体（余白を含む）の縦横比を維持します。座標原点は画像の左下、Y軸は上向きです。</div>
+    </div>
+
+    <h2>抽出方法</h2>
+    <div class="field">
+      <div class="field-title"><label for="mode">画像の種類</label></div>
+      <select id="mode">
+        <option value="mono">白黒・線画（明るさで二値化）</option>
+        <option value="color">カラー（色ごとの領域）</option>
+      </select>
+      <div class="note">画像を読み込むと自動で選びます。必要なら切り替えてください。</div>
+    </div>
+
+    <div id="monoControls">
+      <div class="field">
+        <div class="field-title"><label for="threshold">二値化のしきい値</label><output id="thresholdVal">128</output></div>
+        <div class="field-row"><input id="threshold" type="range" min="1" max="254" step="1" value="128"></div>
+        <div class="field-row"><label class="check"><input type="checkbox" id="autoThreshold" checked> 自動（大津の方法）</label></div>
+        <div class="field-row"><label class="check"><input type="checkbox" id="invert"> 明るい部分を形状とする（反転）</label></div>
+      </div>
+    </div>
+
+    <div id="colorControls" hidden>
+      <div class="field">
+        <div class="field-title"><label for="maxColors">最大色数</label><output id="maxColorsVal">8</output></div>
+        <div class="field-row"><input id="maxColors" type="range" min="2" max="16" step="1" value="8"></div>
+        <div class="note">写真など色数の多い画像は、この色数まで減らして近似します。</div>
+      </div>
+      <div class="field">
+        <div class="field-title"><label for="colorTol">色の判定許容差</label><output id="colorTolVal">40</output></div>
+        <div class="field-row"><input id="colorTol" type="range" min="4" max="150" step="1" value="40"></div>
+        <div class="note">値を大きくすると、近い色を同じ色としてまとめます。</div>
+      </div>
+      <div class="field">
+        <div class="field-title">出力する色</div>
+        <div id="palette" class="palette"></div>
+        <div class="note">チェックした色の領域の輪郭を出力します。画像の縁に最も多い色を背景とみなし、初期状態で外しています。</div>
+      </div>
+    </div>
+
+    <h2>輪郭の細かさ</h2>
+    <div class="field">
+      <div class="field-title"><label for="epsilon">簡略化の許容誤差</label><output id="epsilonVal">1.0 px</output></div>
+      <div class="field-row"><input id="epsilon" type="range" min="0.1" max="8" step="0.1" value="1"></div>
+      <div class="note">小さいほど元の形に忠実で点数が増え、大きいほど点数が減ります。</div>
+    </div>
+    <div class="field">
+      <div class="field-title"><label for="smooth">なめらかさ</label><output id="smoothVal">2</output></div>
+      <div class="field-row"><input id="smooth" type="range" min="0" max="8" step="1" value="2"></div>
+      <div class="note">画素のギザギザをならす回数です。大きくすると角が丸くなります。</div>
+    </div>
+    <div class="field">
+      <div class="field-title"><label for="resolution">処理解像度（長辺）</label></div>
+      <select id="resolution">
+        <option value="500">500 px（速い・粗い）</option>
+        <option value="1000" selected>1000 px（標準）</option>
+        <option value="1600">1600 px</option>
+        <option value="2400">2400 px（遅い・細かい）</option>
+      </select>
+      <div class="note">画像をこの大きさに縮小してから輪郭を抽出します（拡大はしません）。許容誤差などの px はこの解像度での値です。</div>
+    </div>
+
+    <h2>ノイズ除去</h2>
+    <div class="field">
+      <div class="field-title"><label for="minArea">除去する最小面積</label><output id="minAreaVal">20 px²</output></div>
+      <div class="field-row"><input id="minArea" type="range" min="0" max="500" step="1" value="20"></div>
+      <div class="note">これより小さい輪郭（点状のゴミ・小さな穴）を除去します。</div>
+    </div>
+    <div class="field">
+      <div class="field-title"><label for="majority">細かな凹凸の除去</label><output id="majorityVal">0</output></div>
+      <div class="field-row"><input id="majority" type="range" min="0" max="4" step="1" value="0"></div>
+      <div class="note">周囲 3×3 画素の多数決で境界を整える回数です。細い線は消えることがあります。</div>
+    </div>
+  </aside>
+</main>
+
+<footer class="footer">
+  出力形式：先頭行 <code>Polyline=True</code>、各点 <code>0 X Y</code>（mm）。複数の輪郭は空行で区切り、各閉曲線の最後に始点を再出力します。
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
