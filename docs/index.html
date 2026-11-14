@@ -34,10 +34,18 @@
           <label><input type="checkbox" id="showPoints"> 点を表示</label>
           <label><input type="checkbox" id="showFill" checked> 塗りつぶし</label>
           <label id="showCircleLabel"><input type="checkbox" id="showCircle" checked> 外接円</label>
+          <label><input type="checkbox" id="showDup"> 重複箇所を赤で表示</label>
         </div>
       </figure>
     </div>
     <div class="status" id="status" role="status" aria-live="polite">画像を選択してください。</div>
+    <div id="compare" class="compare" hidden>
+      <table>
+        <thead><tr><th>方式</th><th>輪郭数</th><th>点数</th><th>重複区間の長さ</th></tr></thead>
+        <tbody id="compareBody"></tbody>
+      </table>
+      <div class="note">重複区間の長さは、別の色の輪郭の線から 1.2 px（処理解像度）以内を通る部分の長さを、出力寸法の mm に換算した目安です。同じ色の輪郭どうし（細い線の表と裏など）は数えません。</div>
+    </div>
   </section>
 
   <aside class="panel">
@@ -111,6 +119,20 @@
       </div>
     </div>
 
+    <h2>重複の削減</h2>
+    <div class="field">
+      <div class="field-title"><label for="dedupe">隣り合う色の境界の出力</label></div>
+      <select id="dedupe">
+        <option value="on" selected>重複を減らす（推奨）</option>
+        <option value="off">従来の方式（色ごとにすべての輪郭を出力）</option>
+      </select>
+      <div class="note">隣り合う2色の境界は、従来の方式では両方の色から1回ずつ出力されて重なります。重複を減らす方式では、すべての境界線が少なくとも1回出力される範囲で、出力する領域を選んで重なりを減らします。出力はすべて閉曲線です。重複が完全になくならない場合があります。</div>
+    </div>
+    <div class="field" id="sliverField">
+      <div class="field-row"><label class="check"><input type="checkbox" id="absorbSliver" checked> 境界の中間色を隣の色に吸収する</label></div>
+      <div class="note">2色の境目のにじみが別の色として抽出された、幅2画素以下の細い領域を、隣の色に塗り替えます。両側の境界の位置がそろい、ずれた重複を防ぎます。隣の色の中間でない色の細い線は吸収しません。</div>
+    </div>
+
     <h2>輪郭の細かさ</h2>
     <div class="field">
       <div class="field-title"><label for="epsilon">簡略化の許容誤差</label><output id="epsilonVal">1.0 px</output></div>
@@ -137,7 +159,7 @@
     <div class="field">
       <div class="field-title"><label for="minArea">除去する最小面積</label><output id="minAreaVal">20 px²</output></div>
       <div class="field-row"><input id="minArea" type="range" min="0" max="500" step="1" value="20"></div>
-      <div class="note">これより小さい輪郭（点状のゴミ・小さな穴）を除去します。</div>
+      <div class="note">これより小さい領域（点状のゴミ・小さな穴）を除去します。重複を減らす方式では、隣の色に塗り替えて吸収します。</div>
     </div>
     <div class="field">
       <div class="field-title"><label for="majority">細かな凹凸の除去</label><output id="majorityVal">0</output></div>
@@ -151,6 +173,7 @@
   出力形式：先頭行 <code>Polyline=True</code>、各点 <code>0 X Y</code>（mm）。複数の輪郭は空行で区切り、各閉曲線の最後に始点を再出力します。
 </footer>
 
+<script src="topology.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

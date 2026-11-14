@@ -10,6 +10,7 @@ const DEFAULTS = {
   maxColors: 8, colorTol: 40,
   epsilon: 1, smooth: 2, resolution: '1000',
   minArea: 20, majority: 0,
+  dedupe: 'on', absorbSliver: true,
 };
 
 const S = {
@@ -20,6 +21,8 @@ const S = {
   rawCache: new Map(),                     // 段階2：ラベルごとの生の輪郭
   loops: [],                               // 段階3：出力する輪郭（処理解像度の px 座標）
   circle: null,                            // 全輪郭の点を囲む最小の円（元画像の px 座標）
+  clean: null, graph: null,                // 重複を減らす方式：吸収後のラベル画像と境界線の区間
+  results: null,                           // { legacy, dedupe }：両方式の輪郭・外接円・重複区間
 };
 
 // ---------------------------------------------------------------- 画像読み込み
@@ -311,9 +314,11 @@ function smoothLoop(p, iters) {
 }
 
 // 閉曲線の Douglas–Peucker。始点と最遠点で2分割してから各区間を簡略化する。
-function simplifyClosed(p, eps) {
+// min3 が真なら、面積のない線にならないよう少なくとも3点を残す（重複を減らす方式で使う。
+// 従来の方式は以前と同じ結果にするため使わず、3点未満になった輪郭は捨てる）。
+function simplifyClosed(p, eps, min3) {
   const n = p.length / 2;
-  if (n < 4) return p;
+  if (n < 4) return Float64Array.from(p);
   let far = 0, fd = -1;
   for (let i = 1; i < n; i++) {
     const d = (p[i * 2] - p[0]) ** 2 + (p[i * 2 + 1] - p[1]) ** 2;
@@ -336,12 +341,66 @@ function simplifyClosed(p, eps) {
     }
     if (md > eps) { keep[mi] = 1; stack.push([s, mi], [mi, e]); }
   }
+  // 3点未満なら、始点と最遠点を結ぶ線から最も離れた点を加える
+  let kept = 0;
+  for (let i = 0; i < n; i++) kept += keep[i];
+  if (min3 && kept < 3) {
+    const dx = X(far) - p[0], dy = Y(far) - p[1], len = Math.hypot(dx, dy) || 1;
+    let mi = -1, md = -1;
+    for (let i = 1; i < n; i++) {
+      if (keep[i]) continue;
+      const d = Math.abs(dx * (Y(i) - p[1]) - dy * (X(i) - p[0])) / len;
+      if (d > md) { md = d; mi = i; }
+    }
+    if (mi > 0) keep[mi] = 1;
+  }
   const out = [];
   for (let i = 0; i < n; i++) if (keep[i]) out.push(p[i * 2], p[i * 2 + 1]);
   return new Float64Array(out);
 }
 
+// 段階1.5（重複を減らす方式）：小さな領域・中間色を吸収し、境界線を区間に分ける
+// 出力する色によって斜めのつながりの優先度が変わるため、出力する色を変えたときも作り直す（段階2）
+function buildGraphStage() {
+  const pri = colorPriority(S.palette, S.enabled);
+  S.clean = cleanLabels(S.labels, S.w, S.h, S.palette, S.rgba, {
+    minArea: Number($('minArea').value),
+    sliver: $('mode').value === 'color' && $('absorbSliver').checked,
+    pri,
+  });
+  S.graph = buildGraph(S.clean.labels, S.w, S.h, pri);
+}
+
+// 段階3：両方式の輪郭を作り、比較用の重複区間を測る
 function buildLoops() {
+  const iters = Number($('smooth').value), eps = Number($('epsilon').value);
+  S.results = { legacy: makeResult(legacyLoops()), dedupe: null };
+  simplifyChains(S.graph, iters, eps);
+  const G = S.graph, { chosen, exact } = selectFaces(G, c => S.enabled.has(G.compLabel[c]));
+  const loops = faceLoops(G, chosen)
+    .map(l => ({ label: l.label, p: l.p, hole: signedArea(l.p) > 0 }))
+    .sort((a, b) => a.label - b.label || Math.abs(signedArea(b.p)) - Math.abs(signedArea(a.p)));
+  S.results.dedupe = makeResult(loops);
+  S.results.dedupe.exact = exact;
+  applyMethod();
+}
+
+function makeResult(loops) {
+  const sx = S.W / S.w, sy = S.H / S.h, pts = [];
+  for (const l of loops) for (let i = 0; i < l.p.length; i += 2) pts.push([l.p[i] * sx, l.p[i + 1] * sy]);
+  const dup = duplicateMetric(loops, DUP_TOL);
+  return { loops, circle: pts.length ? enclosingCircle(pts) : null, dup };
+}
+const DUP_TOL = 1.2;   // 重複とみなす距離（処理解像度の px）
+
+function applyMethod() {
+  const r = S.results[dedupeOn() ? 'dedupe' : 'legacy'];
+  S.loops = r.loops; S.circle = r.circle;
+}
+const dedupeOn = () => $('dedupe').value === 'on';
+
+// 従来の方式：出力する色ごとに、その色の領域の輪郭をすべて出力する
+function legacyLoops() {
   const minArea = Number($('minArea').value), iters = Number($('smooth').value), eps = Number($('epsilon').value);
   const loops = [];
   for (let label = 0; label < S.palette.length; label++) {
@@ -355,10 +414,7 @@ function buildLoops() {
       loops.push({ label, p, hole: l.area > 0 });
     }
   }
-  S.loops = loops;
-  const sx = S.W / S.w, sy = S.H / S.h, pts = [];
-  for (const l of loops) for (let i = 0; i < l.p.length; i += 2) pts.push([l.p[i] * sx, l.p[i + 1] * sy]);
-  S.circle = pts.length ? enclosingCircle(pts) : null;
+  return loops;
 }
 
 // 最小包含円（Welzl のアルゴリズムの反復版。点の順序をランダムにして期待 O(n)）
@@ -392,7 +448,8 @@ function enclosingCircle(pts) {
 
 // ---------------------------------------------------------------- 処理の流れ
 
-// level 1: ラベル画像から作り直す / 2: 出力する色の変更 / 3: 簡略化などの変更 / 4: 出力サイズのみ
+// level 1: ラベル画像から作り直す / 2: 出力する色・吸収の変更（領域と境界線を作り直す）
+// 3: 平滑化・簡略化の変更 / 4: 表示する方式の切り替え・出力サイズのみ
 let pending = 0, timer = 0;
 function process(level) {
   pending = pending ? Math.min(pending, level) : level;
@@ -404,7 +461,9 @@ function runPending() {
   if (!S.img) return;
   try {
     if (level <= 1) { buildLabels(); S.rawCache.clear(); renderPalette(); }
+    if (level <= 2) buildGraphStage();
     if (level <= 3) buildLoops();
+    if (level === 4) applyMethod();
     drawResult();
     showInfo();
   } catch (e) {
@@ -429,8 +488,38 @@ function showInfo() {
   const size = circleMode()
     ? `直径 ${fmt(outD())} mm の円に収めました。形状の外形 ${fmt(b.maxX - b.minX)} × ${fmt(b.maxY - b.minY)} mm`
     : `出力サイズ ${fmt(outW())} × ${fmt(outH())} mm`;
+  const extra = [];
+  if (dedupeOn() && S.clean) {
+    if (S.clean.nSmall || S.clean.nSliver) extra.push(`隣の色に吸収した領域：小さな領域 ${S.clean.nSmall}・境界の中間色 ${S.clean.nSliver}`);
+    if (S.results.dedupe && !S.results.dedupe.exact) extra.push('領域が多いため、出力する領域の選び方は近似です');
+  }
   setStatus(`輪郭 ${nLoops} 本（外周 ${nLoops - holes}・内側 ${holes}）、合計 ${nPts.toLocaleString()} 点。` +
-    `${size}。処理解像度 ${S.w} × ${S.h} px。`);
+    `${size}。処理解像度 ${S.w} × ${S.h} px。` + (extra.length ? extra.join('。') + '。' : ''));
+  renderCompare();
+}
+
+// 従来の方式と重複を減らす方式の比較表
+function renderCompare() {
+  const rows = [['legacy', '従来の方式'], ['dedupe', '重複を減らす方式']];
+  const cur = dedupeOn() ? 'dedupe' : 'legacy';
+  const tb = $('compareBody');
+  tb.textContent = '';
+  for (const [k, name] of rows) {
+    const r = S.results[k], tr = document.createElement('tr');
+    if (k === cur) tr.className = 'current';
+    const nPts = r.loops.reduce((a, l) => a + l.p.length / 2 + 1, 0);
+    const mm = r.dup.length * mmPerPx(r);
+    for (const t of [name + (k === cur ? '（表示中）' : ''), r.loops.length + ' 本', nPts.toLocaleString() + ' 点', fmt1(mm) + ' mm'])
+      tr.append(Object.assign(document.createElement('td'), { textContent: t }));
+    tb.append(tr);
+  }
+  $('compare').hidden = false;
+}
+const fmt1 = v => (Math.round(v * 10) / 10).toFixed(1);
+// 処理解像度の 1px が出力で何 mm か
+function mmPerPx(r) {
+  if (circleMode() && r.circle) return outD() / Math.max(2 * r.circle.r, 1e-9) * (S.W / S.w);
+  return outW() / S.w;
 }
 
 // 出力座標（mm）の範囲
@@ -467,22 +556,37 @@ function drawResult() {
     ctx.globalAlpha = 0.35; ctx.drawImage(S.img, 0, 0, S.w * scale, S.h * scale); ctx.globalAlpha = 1;
   }
   const lw = Math.max(1, c.width / 700);
-  // 色ごとに偶奇規則で塗る（穴は抜ける）
+  // 出力する色の領域を塗る（輪郭を出力しない領域も、どの色として抽出されたか分かるように）
   if ($('showFill').checked) {
-    for (let label = 0; label < S.palette.length; label++) {
-      const ls = S.loops.filter(l => l.label === label);
-      if (!ls.length) continue;
-      ctx.beginPath();
-      for (const l of ls) pathLoop(ctx, l.p, scale);
-      ctx.fillStyle = rgbaOf(S.palette[label].rgb, 0.28);
-      ctx.fill('evenodd');
+    const labels = dedupeOn() && S.clean ? S.clean.labels : S.labels;
+    const off = document.createElement('canvas');
+    off.width = S.w; off.height = S.h;
+    const octx = off.getContext('2d'), id = octx.createImageData(S.w, S.h), d = id.data;
+    const lut = S.palette.map(p => fillOf(p.rgb));
+    for (let i = 0; i < labels.length; i++) {
+      if (!S.enabled.has(labels[i])) continue;
+      const c = lut[labels[i]];
+      d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = 72;
     }
+    octx.putImageData(id, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(off, 0, 0, S.w * scale, S.h * scale);
+    ctx.imageSmoothingEnabled = true;
   }
   ctx.lineWidth = lw; ctx.lineJoin = 'round';
   for (const l of S.loops) {
     ctx.beginPath(); pathLoop(ctx, l.p, scale);
     ctx.strokeStyle = strokeOf(S.palette[l.label].rgb);
     ctx.stroke();
+  }
+  if ($('showDup').checked) {
+    const r = S.results[dedupeOn() ? 'dedupe' : 'legacy'];
+    ctx.save();
+    ctx.strokeStyle = 'rgba(220,30,30,.85)'; ctx.lineWidth = lw * 4; ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const s of r.dup.spans) { ctx.moveTo(s[0] * scale, s[1] * scale); ctx.lineTo(s[2] * scale, s[3] * scale); }
+    ctx.stroke();
+    ctx.restore();
   }
   if (cc) {
     ctx.save();
@@ -505,7 +609,7 @@ function pathLoop(ctx, p, s) {
   ctx.closePath();
 }
 const lum = ([r, g, b]) => 0.299 * r + 0.587 * g + 0.114 * b;
-const rgbaOf = (c, a) => lum(c) > 215 ? `rgba(120,135,150,${a})` : `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+const fillOf = c => lum(c) > 215 ? [120, 135, 150] : c;
 function strokeOf(c) {
   if ($('mode').value === 'mono') return '#2f6fb0';
   const L = lum(c);
@@ -593,6 +697,7 @@ function syncModeControls() {
   $('circleControls').hidden = !circle;
   $('imageControls').hidden = circle;
   $('showCircleLabel').hidden = !circle;
+  $('sliverField').hidden = !(color && dedupeOn());
 }
 function syncOutputs() {
   $('thresholdVal').textContent = $('threshold').value;
@@ -628,7 +733,11 @@ $('resolution').addEventListener('change', () => { if (S.img) { rasterize(); pro
 $('mode').addEventListener('change', () => { syncModeControls(); process(1); });
 ['threshold', 'maxColors', 'colorTol', 'majority'].forEach(id => $(id).addEventListener('input', () => { syncOutputs(); process(1); }));
 ['autoThreshold', 'invert'].forEach(id => $(id).addEventListener('change', () => { syncOutputs(); process(1); }));
-['epsilon', 'smooth', 'minArea'].forEach(id => $(id).addEventListener('input', () => { syncOutputs(); process(3); }));
+$('absorbSliver').addEventListener('change', () => process(2));
+['epsilon', 'smooth'].forEach(id => $(id).addEventListener('input', () => { syncOutputs(); process(3); }));
+$('minArea').addEventListener('input', () => { syncOutputs(); process(2); });
+$('dedupe').addEventListener('change', () => { syncModeControls(); process(4); });
+$('showDup').addEventListener('change', () => { if (S.img) drawResult(); });
 $('sizeMode').addEventListener('change', () => { syncModeControls(); if (S.img) { drawResult(); showInfo(); } });
 $('outD').addEventListener('input', () => { if (S.img) showInfo(); });
 ['showImage', 'showPoints', 'showFill', 'showCircle'].forEach(id => $(id).addEventListener('change', () => { if (S.img) drawResult(); }));
