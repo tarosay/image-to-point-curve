@@ -1,11 +1,25 @@
 # image-to-point-curve
-画像の輪郭を抽出し、Point Curve形式のテキストファイルや DXF に変換するWebツール。白黒・カラー画像に対応。Point Curve と DXF の相互変換、STL の水平断面（Z 断面）の取り出しもできます。 / A web tool that extracts contours from monochrome and color images and converts them into Point Curve text files.
+
+[![Demo](https://img.shields.io/badge/demo-GitHub%20Pages-2f6fb0?logo=github)](https://tarosay.github.io/image-to-point-curve/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Vanilla JS](https://img.shields.io/badge/JavaScript-no%20build-f7df1e?logo=javascript&logoColor=black)](docs/)
+[![Input](https://img.shields.io/badge/input-PNG%20%7C%20JPEG%20%7C%20WebP%20%7C%20TXT%20%7C%20DXF%20%7C%20STL-555)](#使い方)
+[![Output](https://img.shields.io/badge/output-Point%20Curve%20TXT%20%7C%20DXF-dc6b31)](#出力形式)
+
+画像の輪郭を抽出し、DesignSpark Mechanical で読み込める Point Curve 形式の TXT や DXF に変換する Web ツールです。白黒・カラー画像に対応します。  
+Point Curve と DXF の相互変換、STL の水平断面（Z 断面）の取り出しもできます。処理はすべてブラウザ内で完結します。
+
+A browser-based tool that converts images into Point Curve (TXT) and DXF outlines, converts between Point Curve and DXF, and slices STL models at any Z height.
+
+---
 
 ## 公開ページ
 
 https://tarosay.github.io/image-to-point-curve/
 
 画像の処理はすべてブラウザ内で行います。画像がサーバーへ送信されることはありません。スマートフォンでも使えます。
+
+---
 
 ## 使い方
 
@@ -56,6 +70,8 @@ STL（.stl）を読み込むと、3D プリンタのスライサーのように�
 - プレビューの下の表に、従来の方式と重複を減らす方式の輪郭数・点数・重複区間の長さ（mm）を並べて表示します。
 - 重複区間の長さは、別の色の輪郭の線から 1.2 px（処理解像度）以内を通る部分の長さを mm に換算した目安です。同じ色の輪郭どうし（細い線の表と裏など）は数えません。
 
+---
+
 ## 重複の削減
 
 カラー画像を色ごとに輪郭抽出すると、隣り合う2色の境界が両方の色から1回ずつ出力され、同じ位置に輪郭が重なります。重複を減らす方式では次のように処理します。
@@ -66,6 +82,7 @@ STL（.stl）を読み込むと、3D プリンタのスライサーのように�
 
 閉曲線のまま必要な境界をすべて残すため、3色以上が接する部分などでは重複が残る場合があります。
 
+---
 
 ## 出力形式
 
@@ -94,6 +111,8 @@ Polyline=True
 - 折れ線として出力するため、読み込み方式（Polyline）の設定は DXF には影響しない
 - 改行コードは CRLF
 
+---
+
 ## 読み込める形式
 
 ### Point Curve（.txt）
@@ -112,6 +131,8 @@ Polyline=True
 - `$INSUNITS` の単位（インチ・cm・m など）を mm に換算します。単位の指定がないときは mm とみなします
 - 画層の名前と色は、DXF に出力するときに引き継ぎます
 
+---
+
 ## ファイル構成
 
 | パス | 内容 |
@@ -129,6 +150,8 @@ Polyline=True
 ```bash
 python -m http.server 8000 --directory docs
 ```
+
+---
 
 ## ライセンス
 
