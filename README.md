@@ -1,5 +1,5 @@
 # image-to-point-curve
-画像の輪郭を抽出し、Point Curve形式のテキストファイルに変換するWebツール。白黒・カラー画像に対応。 / A web tool that extracts contours from monochrome and color images and converts them into Point Curve text files.
+画像の輪郭を抽出し、Point Curve形式のテキストファイルや DXF に変換するWebツール。白黒・カラー画像に対応。Point Curve と DXF の相互変換、STL の水平断面（Z 断面）の取り出しもできます。 / A web tool that extracts contours from monochrome and color images and converts them into Point Curve text files.
 
 ## 公開ページ
 
@@ -14,6 +14,24 @@ https://tarosay.github.io/image-to-point-curve/
 3. 必要に応じて右側（スマートフォンでは下側）のパラメータを調整します。
 4. 「point curve (.txt) をダウンロード」を押して TXT を保存します。DXF が必要なときは「DXF (.dxf) をダウンロード」を押します。
 5. DesignSpark Mechanical で TXT を Point Curve として読み込みます。DXF は DXF を読み込める CAD で開きます。
+
+### Point Curve と DXF の相互変換
+
+画像の代わりに Point Curve（.txt）や DXF（.dxf）を読み込むと、その曲線を TXT・DXF のどちらにも出力できます。
+
+- 座標（mm）は変えずにそのまま出力します。出力サイズなど画像用の設定は使いません
+- Point Curve を読み込むと、読み込み方式（Polyline）をファイルの値に合わせます
+- 開いた曲線は赤で表示します。DesignSpark Mechanical は開いた Point Curve を読み込めないため、TXT に出力するときは注意してください
+
+### STL の Z 断面
+
+STL（.stl）を読み込むと、3D プリンタのスライサーのように、Z のバーを動かした高さの水平断面を表示します。表示中の断面を TXT・DXF に出力できます。
+
+- バーの下の目盛りは、平らな面がある高さ（形が変わる位置）です。目盛りを押すとその高さに移ります。Z の値を直接入力することもできます
+- 面や頂点とちょうど同じ高さでは断面が定まらないため、わずかにずらして切ります（ずらしたときは表示します）
+- 座標は STL の X・Y をそのまま mm として出力します（STL には単位の決まりがないため）
+- 保存するファイル名には切った高さが入ります（例：`名前_z-1.75.dxf`）
+- バイナリ形式とテキスト形式の STL に対応します。面に隙間がある STL では断面が閉じず、開いた曲線（赤）になることがあります
 
 ### 調整できる項目
 
@@ -64,16 +82,35 @@ Polyline=True
 
 - 各行は `0 X Y`（mm、小数4桁）
 - 外周・内側の穴を含め、複数の閉曲線を空行で区切って出力
-- 各閉曲線の最後に始点を再出力
+- 各閉曲線の最後に始点を再出力（読み込んだファイルの開いた曲線は再出力しない）
 - 改行コードは CRLF
 
 ### DXF
 
 - 形式は DXF R12（AC1009）の ASCII。古い CAD でも読めるよう、各輪郭を閉じた `POLYLINE`（頂点は `VERTEX`）として出力
 - 座標は TXT と同じ（mm、Y 軸上向き、小数4桁）。単位は `$INSUNITS = 4`（mm）を指定
-- 画層：白黒は `CONTOUR`、カラーは出力する色ごとに `COLOR_01`、`COLOR_02`…（番号は「出力する色」の「色 n」と同じ）。画層の色は元の色に近い AutoCAD の基本色
+- 画層：白黒は `CONTOUR`、カラーは出力する色ごとに `COLOR_01`、`COLOR_02`…（番号は「出力する色」の「色 n」と同じ）。画層の色は元の色に近い AutoCAD の基本色。読み込んだ DXF は元の画層、Point Curve は `CONTOUR`
+- 開いた曲線（読み込んだファイルにあったもの）は開いたポリラインとして出力
 - 折れ線として出力するため、読み込み方式（Polyline）の設定は DXF には影響しない
 - 改行コードは CRLF
+
+## 読み込める形式
+
+### Point Curve（.txt）
+
+- 先頭の `Polyline=True/False`、`3d=True/False` の行を読みます
+- 数値の行は、`3d` でないとき `X Y` または `番号 X Y`、`3d=True` のとき `X Y Z` または `番号 X Y Z`。Z は捨てて XY 平面に投影します
+- 空行、または先頭の番号が変わったところで曲線を区切ります
+- 最後の点が始点と同じ曲線を閉曲線とみなします
+
+### DXF（.dxf）
+
+- ASCII 形式の DXF を読みます（バイナリ形式には対応していません）。ENTITIES セクションの要素だけを読み、ブロック（INSERT）は読み飛ばします
+- 対応する要素：`LWPOLYLINE`・`POLYLINE`（ふくらみの円弧を含む）、`LINE`、`ARC`、`CIRCLE`、`ELLIPSE`、`SPLINE`
+- 円弧・円・楕円は、弦の誤差が 0.01 mm 以下になるよう点の並びに変換します。`SPLINE` は制御点から曲線を計算して点の並びにします（制御点がないときは通過点を結びます）
+- 同じ画層で端点を共有する開いた線（`LINE` と `ARC` の組み合わせなど）は1本につなぎ、始点に戻れば閉曲線にします。3本以上が集まる点ではつなぎません
+- `$INSUNITS` の単位（インチ・cm・m など）を mm に換算します。単位の指定がないときは mm とみなします
+- 画層の名前と色は、DXF に出力するときに引き継ぎます
 
 ## ファイル構成
 
@@ -82,6 +119,7 @@ Polyline=True
 | `docs/index.html` | 画面 |
 | `docs/style.css` | スタイル |
 | `docs/app.js` | 画像の読み込み、色の判定、従来の方式の輪郭抽出、出力、画面の処理 |
+| `docs/vector-io.js` | Point Curve・DXF・STL の読み込みと STL の Z 断面 |
 | `docs/topology.js` | 重複を減らす方式（領域と境界線の区間、出力する領域の選択、閉曲線の組み立て）と重複区間の測定 |
 
 ビルドや外部ライブラリは使っていません。GitHub Pages では、リポジトリの Settings → Pages で、main ブランチの `/docs` フォルダを公開元に設定します。

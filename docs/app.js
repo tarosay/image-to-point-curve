@@ -23,21 +23,25 @@ const S = {
   circle: null,                            // 全輪郭の点を囲む最小の円（元画像の px 座標）
   clean: null, graph: null,                // 重複を減らす方式：吸収後のラベル画像と境界線の区間
   results: null,                           // { legacy, dedupe }：両方式の輪郭・外接円・重複区間
+  vec: null,                               // 読み込んだ Point Curve / DXF：{ curves, notes, kind }（このとき img は null）
 };
 
 // ---------------------------------------------------------------- 画像読み込み
 
 function loadFile(file) {
   if (!file) return;
+  const ext = (file.name.match(/\.([^.]+)$/) || [, ''])[1].toLowerCase();
+  if (ext === 'txt' || ext === 'dxf' || ext === 'stl') { loadVector(file, ext); return; }
   if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
-    setStatus('PNG / JPEG / WebP の画像を選択してください。', true);
+    setStatus('PNG / JPEG / WebP の画像、Point Curve（.txt）、DXF（.dxf）、STL（.stl）を選択してください。', true);
     return;
   }
   const url = URL.createObjectURL(file);
   const img = new Image();
   img.onload = () => {
     URL.revokeObjectURL(url);
-    S.img = img;
+    S.img = img; S.vec = null;
+    setSourceKind('image');
     S.name = file.name.replace(/\.[^.]+$/, '') || 'image';
     S.W = img.naturalWidth; S.H = img.naturalHeight;
     $('srcInfo').textContent = `${S.W} × ${S.H} px`;
@@ -52,6 +56,94 @@ function loadFile(file) {
   };
   img.onerror = () => { URL.revokeObjectURL(url); setStatus('画像を読み込めませんでした。', true); };
   img.src = url;
+}
+
+// Point Curve TXT / DXF / STL を読み込む。座標は mm のまま変えずに、そのまま出力する。
+// STL は Z の高さを選んで、その断面を曲線にする。
+function loadVector(file, ext) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let v;
+    try {
+      if (ext === 'stl') {
+        const mesh = parseStl(reader.result);
+        v = { curves: [], notes: [], mesh, z: (mesh.zmin + mesh.zmax) / 2 };
+      } else v = ext === 'dxf' ? parseDxf(reader.result) : parsePointCurveTxt(reader.result);
+    } catch (e) {
+      console.error(e);
+      setStatus('読み込めませんでした：' + e.message, true);
+      return;
+    }
+    if (ext !== 'stl' && !v.curves.length) { setStatus('曲線が見つかりませんでした。' + (v.notes.length ? v.notes.join('。') + '。' : ''), true); return; }
+    if (v.polyline !== null && v.polyline !== undefined) $('txtPolyline').value = v.polyline ? 'true' : 'false';
+    S.vec = { ...v, kind: ext };
+    S.img = null; S.loops = []; S.results = null;
+    S.name = file.name.replace(/\.[^.]+$/, '') || 'curve';
+    clearTimeout(timer); pending = 0;
+    setSourceKind(ext === 'stl' ? 'stl' : 'vector');
+    $('srcInfo').textContent = '';
+    $('previews').hidden = false;
+    $('dropZone').classList.add('compact');
+    if (ext === 'stl') { setupSlider(); sliceAt(v.z); return; }
+    drawVector();
+    showVectorInfo();
+  };
+  reader.onerror = () => setStatus('ファイルを読み込めませんでした。', true);
+  if (ext === 'stl') reader.readAsArrayBuffer(file); else reader.readAsText(file);
+}
+
+// 画像と Point Curve / DXF / STL で、表示する欄を切り替える
+function setSourceKind(kind) {
+  document.body.classList.toggle('vector-mode', kind !== 'image');
+  document.body.classList.toggle('stl-mode', kind === 'stl');
+  $('outCaption').textContent = kind === 'stl' ? 'STL の断面' : kind === 'vector' ? '読み込んだ曲線' : '抽出した輪郭';
+}
+
+// ---------------------------------------------------------------- STL の Z 断面
+
+// Z のバーを STL の高さの範囲に合わせ、平らな面の高さに目盛りを付ける
+function setupSlider() {
+  const m = S.vec.mesh, range = m.zmax - m.zmin;
+  const step = range > 0 ? Math.pow(10, Math.floor(Math.log10(range / 1000))) : 0.001;
+  for (const id of ['zSlider', 'zInput']) {
+    const el = $(id);
+    el.min = m.zmin; el.max = m.zmax; el.step = step;
+  }
+  $('zRange').textContent = `${fmtZ(m.zmin)} 〜 ${fmtZ(m.zmax)} mm`;
+  const box = $('zTicks');
+  box.textContent = '';
+  for (const z of m.levels) {
+    const t = document.createElement('button');
+    t.type = 'button'; t.className = 'ztick';
+    t.style.left = (range > 0 ? (z - m.zmin) / range * 100 : 50) + '%';
+    t.title = `平らな面 Z = ${fmtZ(z)} mm`;
+    t.setAttribute('aria-label', t.title);
+    t.addEventListener('click', () => sliceAt(z));
+    box.append(t);
+  }
+  $('zLevels').textContent = m.levels.length
+    ? '平らな面の高さ（形が変わる位置）：' + m.levels.map(fmtZ).join('、') + ' mm'
+    : '平らな面は見つかりませんでした。';
+}
+const fmtZ = v => (Math.round(v * 10000) / 10000).toString();
+
+// 指定した高さで切って表示する。バーを動かしている間は、描画 1 回ぶんにまとめる
+let sliceReq = 0, sliceZ = 0;
+function sliceAt(z) {
+  sliceZ = z;
+  if (sliceReq) return;
+  sliceReq = requestAnimationFrame(() => {
+    sliceReq = 0;
+    const m = S.vec && S.vec.mesh;
+    if (!m) return;
+    const z = Math.min(m.zmax, Math.max(m.zmin, Number(sliceZ)));
+    const r = sliceStl(m, z);
+    S.vec.curves = r.curves; S.vec.z = r.z; S.vec.zAsked = z;
+    $('zSlider').value = z;
+    if (document.activeElement !== $('zInput')) $('zInput').value = fmtZ(z);
+    drawVector();
+    showVectorInfo();
+  });
 }
 
 function drawSource() {
@@ -603,6 +695,67 @@ function drawResult() {
   }
 }
 
+// 読み込んだ曲線のプレビュー（mm 座標、Y 上向き）
+function drawVector() {
+  // STL は断面ごとに拡大率が変わらないよう、STL 全体の XY の範囲で描く
+  const curves = S.vec.curves, b = S.vec.mesh ? S.vec.mesh.frame : curveBounds(curves);
+  const w = Math.max(b.maxX - b.minX, 1e-9), h = Math.max(b.maxY - b.minY, 1e-9);
+  const m = Math.max(w, h) * 0.03, scale = 1200 / (Math.max(w, h) + 2 * m);
+  const c = $('outCanvas');
+  c.width = Math.max(1, Math.round((w + 2 * m) * scale)); c.height = Math.max(1, Math.round((h + 2 * m) * scale));
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  const X = x => (x - b.minX + m) * scale, Y = y => (b.maxY - y + m) * scale;
+  const lw = Math.max(1, c.width / 700);
+  ctx.lineWidth = lw; ctx.lineJoin = 'round';
+  for (const cv of curves) {
+    const p = cv.pts;
+    ctx.beginPath(); ctx.moveTo(X(p[0]), Y(p[1]));
+    for (let i = 2; i < p.length; i += 2) ctx.lineTo(X(p[i]), Y(p[i + 1]));
+    if (cv.closed) ctx.closePath();
+    // 開いた曲線は色を変えて区別する
+    ctx.strokeStyle = cv.closed ? '#2f6fb0' : '#c0392b';
+    ctx.stroke();
+  }
+  if ($('showPoints').checked) {
+    ctx.fillStyle = '#dc6b31';
+    const r = lw * 1.4;
+    for (const cv of curves) for (let i = 0; i < cv.pts.length; i += 2) ctx.fillRect(X(cv.pts[i]) - r, Y(cv.pts[i + 1]) - r, r * 2, r * 2);
+  }
+}
+
+function showVectorInfo() {
+  const curves = S.vec.curves, nOpen = curves.filter(c => !c.closed).length;
+  const nPts = curves.reduce((a, c) => a + c.pts.length / 2 + (c.closed ? 1 : 0), 0);
+  const b = curveBounds(curves);
+  const layers = [...new Set(curves.map(c => c.layer))];
+  $('resultInfo').textContent = `${curves.length} 本・${nPts.toLocaleString()} 点`;
+  $('downloadTxt').disabled = $('downloadDxf').disabled = curves.length === 0;
+  if (S.vec.mesh) {
+    $('zNow').textContent = `Z = ${fmtZ(S.vec.z)} mm`;
+    if (!curves.length) { setStatus(`Z = ${fmtZ(S.vec.z)} mm には断面がありません。`, true); return; }
+  }
+  const head = S.vec.mesh
+    ? `STL（三角形 ${S.vec.mesh.n.toLocaleString()} 枚）の Z = ${fmtZ(S.vec.z)} mm の断面`
+      + (Math.abs(S.vec.z - S.vec.zAsked) > 1e-12 ? `（Z = ${fmtZ(S.vec.zAsked)} mm は面や頂点と重なるため、少しずらして切りました）` : '')
+    : `${S.vec.kind === 'dxf' ? 'DXF' : 'Point Curve'} を読み込みました`;
+  const msg = [`${head}。曲線 ${curves.length} 本（閉曲線 ${curves.length - nOpen}・開いた曲線 ${nOpen}）、合計 ${nPts.toLocaleString()} 点`,
+    `範囲 X ${fmt(b.minX)}〜${fmt(b.maxX)}・Y ${fmt(b.minY)}〜${fmt(b.maxY)} mm（${fmt(b.maxX - b.minX)} × ${fmt(b.maxY - b.minY)} mm）`];
+  if (S.vec.kind === 'dxf') msg.push('画層 ' + layers.join('、'));
+  if (S.vec.polyline !== null && S.vec.polyline !== undefined) msg.push(`読み込み方式（Polyline）をファイルに合わせて ${S.vec.polyline ? 'True' : 'False'} にしました`);
+  if (nOpen) msg.push('開いた曲線は赤で表示しています。DesignSpark Mechanical は開いた Point Curve を読み込めません');
+  setStatus(msg.concat(S.vec.notes).join('。') + '。', nOpen > 0);
+}
+
+function curveBounds(curves) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const c of curves) for (let i = 0; i < c.pts.length; i += 2) {
+    const x = c.pts[i], y = c.pts[i + 1];
+    if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 function pathLoop(ctx, p, s) {
   ctx.moveTo(p[0] * s, p[1] * s);
   for (let i = 2; i < p.length; i += 2) ctx.lineTo(p[i] * s, p[i + 1] * s);
@@ -668,28 +821,44 @@ function mmMapper() {
   return (x, y) => [x * kx, H - y * ky];
 }
 
+// 出力する曲線：{ pts（mm）, closed, layer, aci }。
+// 画像からは抽出した輪郭を mm に換算し、読み込んだ Point Curve / DXF は座標をそのまま使う。
+function outputCurves() {
+  if (S.vec) return S.vec.curves.map(c => ({ ...c, aci: c.aci || 7 }));
+  const f = mmMapper(), mono = $('mode').value === 'mono';
+  return S.loops.map(l => {
+    const pts = new Float64Array(l.p.length);
+    for (let i = 0; i < l.p.length; i += 2) [pts[i], pts[i + 1]] = f(l.p[i], l.p[i + 1]);
+    return {
+      pts, closed: true,
+      layer: mono ? 'CONTOUR' : `COLOR_${String(l.label + 1).padStart(2, '0')}`,
+      aci: mono ? 7 : aciOf(S.palette[l.label].rgb),
+    };
+  });
+}
+
 function txtString() {
-  const f = mmMapper();
-  const pt = (x, y) => { const [X, Y] = f(x, y); return `0 ${X.toFixed(4)} ${Y.toFixed(4)}`; };
-  const blocks = S.loops.map(l => {
+  const pt = (x, y) => `0 ${x.toFixed(4)} ${y.toFixed(4)}`;
+  // 閉曲線は最後に始点を再出力する。開いた曲線はそのまま出力する
+  const blocks = outputCurves().map(c => {
     const rows = [];
-    for (let i = 0; i < l.p.length; i += 2) rows.push(pt(l.p[i], l.p[i + 1]));
-    rows.push(rows[0]);
+    for (let i = 0; i < c.pts.length; i += 2) rows.push(pt(c.pts[i], c.pts[i + 1]));
+    if (c.closed) rows.push(rows[0]);
     return rows.join('\r\n');
   });
   return `Polyline=${$('txtPolyline').value === 'true' ? 'True' : 'False'}\r\n` + blocks.join('\r\n\r\n') + '\r\n';
 }
 
 // DXF（R12 / AC1009 の ASCII 形式）。互換性を優先し、各輪郭を閉じた POLYLINE として出力する。
-// 単位は mm（$INSUNITS=4）。カラーでは出力する色ごとに画層を分ける。
+// 単位は mm（$INSUNITS=4）。カラーでは出力する色ごとに画層を分け、読み込んだ DXF は元の画層を保つ。
 function dxfString() {
-  const f = mmMapper(), mono = $('mode').value === 'mono';
-  const layerOf = label => mono ? 'CONTOUR' : `COLOR_${String(label + 1).padStart(2, '0')}`;
-  const labels = [...new Set(S.loops.map(l => l.label))].sort((a, b) => a - b);
+  const curves = outputCurves();
+  const layers = new Map();
+  for (const c of curves) if (c.layer !== '0' && !layers.has(c.layer)) layers.set(c.layer, c.aci);
   const out = [];
   const g = (code, v) => out.push(String(code), String(v));
   const num = v => v.toFixed(4);
-  const b = outBounds();
+  const b = curveBounds(curves);
 
   g(0, 'SECTION'); g(2, 'HEADER');
   g(9, '$ACADVER'); g(1, 'AC1009');
@@ -703,23 +872,21 @@ function dxfString() {
   g(0, 'TABLE'); g(2, 'LTYPE'); g(70, 1);
   g(0, 'LTYPE'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, '0.0');
   g(0, 'ENDTAB');
-  g(0, 'TABLE'); g(2, 'LAYER'); g(70, labels.length + 1);
+  g(0, 'TABLE'); g(2, 'LAYER'); g(70, layers.size + 1);
   g(0, 'LAYER'); g(2, '0'); g(70, 0); g(62, 7); g(6, 'CONTINUOUS');
-  for (const label of labels) {
-    g(0, 'LAYER'); g(2, layerOf(label)); g(70, 0); g(62, mono ? 7 : aciOf(S.palette[label].rgb)); g(6, 'CONTINUOUS');
+  for (const [name, aci] of layers) {
+    g(0, 'LAYER'); g(2, name); g(70, 0); g(62, aci); g(6, 'CONTINUOUS');
   }
   g(0, 'ENDTAB');
   g(0, 'ENDSEC');
 
   g(0, 'SECTION'); g(2, 'ENTITIES');
-  for (const l of S.loops) {
-    const layer = layerOf(l.label);
-    g(0, 'POLYLINE'); g(8, layer); g(66, 1); g(10, '0.0'); g(20, '0.0'); g(30, '0.0'); g(70, 1);
-    for (let i = 0; i < l.p.length; i += 2) {
-      const [X, Y] = f(l.p[i], l.p[i + 1]);
-      g(0, 'VERTEX'); g(8, layer); g(10, num(X)); g(20, num(Y)); g(30, '0.0');
+  for (const c of curves) {
+    g(0, 'POLYLINE'); g(8, c.layer); g(66, 1); g(10, '0.0'); g(20, '0.0'); g(30, '0.0'); g(70, c.closed ? 1 : 0);
+    for (let i = 0; i < c.pts.length; i += 2) {
+      g(0, 'VERTEX'); g(8, c.layer); g(10, num(c.pts[i])); g(20, num(c.pts[i + 1])); g(30, '0.0');
     }
-    g(0, 'SEQEND'); g(8, layer);
+    g(0, 'SEQEND'); g(8, c.layer);
   }
   g(0, 'ENDSEC');
   g(0, 'EOF');
@@ -774,8 +941,7 @@ function applyDefaults() {
     const el = $(k);
     if (el.type === 'checkbox') el.checked = v; else el.value = v;
   }
-  if (S.img) { $('mode').value = detectMode(); syncHeightFromWidth(); }
-  syncModeControls(); syncOutputs();
+  if (S.img) { $('mode').value = detectMode(); syncHeightFromWidth(); }  syncModeControls(); syncOutputs();
 }
 
 function openPicker() { $('fileInput').click(); }
@@ -799,17 +965,24 @@ $('dedupe').addEventListener('change', () => { syncModeControls(); process(4); }
 $('showDup').addEventListener('change', () => { if (S.img) drawResult(); });
 $('sizeMode').addEventListener('change', () => { syncModeControls(); if (S.img) { drawResult(); showInfo(); } });
 $('outD').addEventListener('input', () => { if (S.img) showInfo(); });
+$('showPoints').addEventListener('change', () => { if (S.vec) drawVector(); });
+$('zSlider').addEventListener('input', e => sliceAt(Number(e.target.value)));
+$('zInput').addEventListener('change', e => { const v = Number(e.target.value); if (Number.isFinite(v)) sliceAt(v); });
+$('zInput').addEventListener('blur', () => { if (S.vec && S.vec.mesh) $('zInput').value = fmtZ(S.vec.zAsked); });
 ['showImage', 'showPoints', 'showFill', 'showCircle'].forEach(id => $(id).addEventListener('change', () => { if (S.img) drawResult(); }));
 $('outW').addEventListener('input', () => { syncHeightFromWidth(); if (S.img) showInfo(); });
 $('outH').addEventListener('input', () => { syncWidthFromHeight(); if (S.img) showInfo(); });
 $('reset').addEventListener('click', () => { applyDefaults(); if (S.img) process(1); });
 function outputReady() {
+  if (S.vec) return S.vec.curves.length > 0;
   if (!S.loops.length) return false;
   const ok = circleMode() ? Number($('outD').value) > 0 : Number($('outW').value) > 0 && Number($('outH').value) > 0;
   if (!ok) setStatus('出力サイズには正の値を入力してください。', true);
   return ok;
 }
-$('downloadTxt').addEventListener('click', () => { if (outputReady()) download(`${S.name}_point_curve.txt`, txtString()); });
-$('downloadDxf').addEventListener('click', () => { if (outputReady()) download(`${S.name}.dxf`, dxfString()); });
+// STL の断面は、切った高さをファイル名に入れる
+const outName = () => S.vec && S.vec.mesh ? `${S.name}_z${fmtZ(S.vec.z)}` : S.name;
+$('downloadTxt').addEventListener('click', () => { if (outputReady()) download(`${outName()}_point_curve.txt`, txtString()); });
+$('downloadDxf').addEventListener('click', () => { if (outputReady()) download(`${outName()}.dxf`, dxfString()); });
 
 applyDefaults();

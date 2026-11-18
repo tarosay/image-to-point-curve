@@ -9,37 +9,46 @@
 </head>
 <body>
 <h1>画像 → Point Curve 変換</h1>
-<p class="subtitle">画像から輪郭を抽出し、DesignSpark Mechanical で読み込める Point Curve 形式の TXT に変換します。寸法は mm。画像はサーバーへ送信されず、<strong>ブラウザ内だけで処理</strong>します。</p>
+<p class="subtitle">画像から輪郭を抽出し、DesignSpark Mechanical で読み込める Point Curve 形式の TXT や DXF に変換します。Point Curve と DXF の相互変換、STL の水平断面の取り出しもできます。寸法は mm。画像はサーバーへ送信されず、<strong>ブラウザ内だけで処理</strong>します。</p>
 
 <main class="wrap">
   <section class="workspace" aria-label="プレビュー">
     <div id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="画像ファイルを選択">
       <div class="drop-msg">
         <strong>画像をここにドラッグ＆ドロップ</strong><br>
-        またはタップしてファイルを選択（PNG / JPEG / WebP）
+        またはタップしてファイルを選択（画像：PNG / JPEG / WebP、曲線：Point Curve .txt / DXF .dxf、立体：STL .stl の断面）
       </div>
-      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,.txt,.dxf,.stl,text/plain" hidden>
     </div>
 
     <div id="previews" class="previews" hidden>
-      <figure class="pv">
+      <figure class="pv img-only">
         <figcaption>元画像 <span id="srcInfo" class="muted"></span></figcaption>
         <div class="canvas-shell"><canvas id="srcCanvas"></canvas></div>
       </figure>
       <figure class="pv">
-        <figcaption>抽出した輪郭 <span id="resultInfo" class="muted"></span></figcaption>
+        <figcaption><span id="outCaption">抽出した輪郭</span> <span id="resultInfo" class="muted"></span></figcaption>
         <div class="canvas-shell checker"><canvas id="outCanvas"></canvas></div>
+        <div class="field zbar stl-only">
+          <div class="field-title"><label for="zSlider">断面の高さ</label><output id="zNow"></output></div>
+          <div class="zslider">
+            <input id="zSlider" type="range">
+            <div id="zTicks" class="zticks"></div>
+          </div>
+          <div class="field-row"><span>Z</span><input id="zInput" type="number"><span class="unit">mm</span><span class="muted" id="zRange"></span></div>
+          <div class="note"><span id="zLevels"></span> 目盛りを押すと、その高さの断面を表示します（面と重なる高さは少しずらして切ります）。</div>
+        </div>
         <div class="view-opts">
-          <label><input type="checkbox" id="showImage"> 元画像を重ねる</label>
+          <label class="img-only"><input type="checkbox" id="showImage"> 元画像を重ねる</label>
           <label><input type="checkbox" id="showPoints"> 点を表示</label>
-          <label><input type="checkbox" id="showFill" checked> 塗りつぶし</label>
-          <label id="showCircleLabel"><input type="checkbox" id="showCircle" checked> 外接円</label>
-          <label><input type="checkbox" id="showDup"> 重複箇所を赤で表示</label>
+          <label class="img-only"><input type="checkbox" id="showFill" checked> 塗りつぶし</label>
+          <label id="showCircleLabel" class="img-only"><input type="checkbox" id="showCircle" checked> 外接円</label>
+          <label class="img-only"><input type="checkbox" id="showDup"> 重複箇所を赤で表示</label>
         </div>
       </figure>
     </div>
     <div class="status" id="status" role="status" aria-live="polite">画像を選択してください。</div>
-    <div id="compare" class="compare" hidden>
+    <div id="compare" class="compare img-only" hidden>
       <table>
         <thead><tr><th>方式</th><th>輪郭数</th><th>点数</th><th>重複区間の長さ</th></tr></thead>
         <tbody id="compareBody"></tbody>
@@ -65,6 +74,11 @@
       <div class="note">初期値は True。False にすると DSM で直線や角も滑らかに補間されることがあります。</div>
     </div>
 
+    <div class="field vector-only">
+      <div class="note">Point Curve・DXF を読み込んだときは、座標（mm）を変えずに TXT・DXF へ出力します。下の画像用の設定は使いません。DXF の円弧・円・楕円・スプラインは点の並びに変換します。</div>
+    </div>
+
+    <div class="img-only">
     <h2>出力サイズ</h2>
     <div class="field">
       <div class="field-title"><label for="sizeMode">サイズの決め方</label></div>
@@ -167,6 +181,7 @@
       <div class="field-row"><input id="majority" type="range" min="0" max="4" step="1" value="0"></div>
       <div class="note">周囲 3×3 画素の多数決で境界を整える回数です。細い線は消えることがあります。</div>
     </div>
+    </div>
   </aside>
 </main>
 
@@ -175,6 +190,7 @@
 </footer>
 
 <script src="topology.js"></script>
+<script src="vector-io.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

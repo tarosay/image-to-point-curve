@@ -32,6 +32,23 @@ h1 { font-size: 21px; margin: 0 0 5px; font-weight: 750; }
                     linear-gradient(45deg, #f1f3f5 25%, transparent 25%, transparent 75%, #f1f3f5 75%);
   background-size: 16px 16px; background-position: 0 0, 8px 8px;
 }
+.vector-mode .img-only, body:not(.vector-mode) .vector-only { display: none !important; }
+.vector-mode .previews { grid-template-columns: 1fr; }
+body:not(.stl-mode) .stl-only { display: none !important; }
+/* 曲線の表示は画面の高さに収め、STL では断面とバーを同時に見られるようにする */
+.vector-mode #outCanvas { width: auto; max-width: 100%; max-height: 62vh; margin: 0 auto; }
+.zbar { margin: 8px 0 4px; }
+.zslider { position: relative; padding-bottom: 12px; }
+.zslider input[type=range] { width: 100%; margin: 0; }
+.zticks { position: absolute; left: 8px; right: 8px; bottom: 0; height: 12px; }
+.ztick {
+  position: absolute; top: 0; width: 10px; height: 12px; min-height: 0; padding: 0; margin-left: -5px;
+  border: none; border-radius: 0; background: transparent; cursor: pointer;
+}
+.ztick::before { content: ""; position: absolute; left: 4px; top: 0; width: 2px; height: 12px; background: #dc6b31; }
+.ztick:hover { background: transparent; }
+.zbar .muted { margin-left: 4px; }
+
 canvas { display: block; width: 100%; height: auto; }
 .view-opts { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: #44525f; margin-top: 6px; }
 .view-opts label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
