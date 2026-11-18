@@ -12,8 +12,8 @@ https://tarosay.github.io/image-to-point-curve/
 1. 画像（PNG / JPEG / WebP）を画面上部の枠にドラッグ＆ドロップするか、枠をタップして選択します。
 2. 画像の種類（白黒・線画／カラー）が自動で選ばれ、抽出した輪郭がプレビューに表示されます。
 3. 必要に応じて右側（スマートフォンでは下側）のパラメータを調整します。
-4. 「point curve (.txt) をダウンロード」を押して TXT を保存します。
-5. DesignSpark Mechanical で TXT を Point Curve として読み込みます。
+4. 「point curve (.txt) をダウンロード」を押して TXT を保存します。DXF が必要なときは「DXF (.dxf) をダウンロード」を押します。
+5. DesignSpark Mechanical で TXT を Point Curve として読み込みます。DXF は DXF を読み込める CAD で開きます。
 
 ### 調整できる項目
 
@@ -65,6 +65,14 @@ Polyline=True
 - 各行は `0 X Y`（mm、小数4桁）
 - 外周・内側の穴を含め、複数の閉曲線を空行で区切って出力
 - 各閉曲線の最後に始点を再出力
+- 改行コードは CRLF
+
+### DXF
+
+- 形式は DXF R12（AC1009）の ASCII。古い CAD でも読めるよう、各輪郭を閉じた `POLYLINE`（頂点は `VERTEX`）として出力
+- 座標は TXT と同じ（mm、Y 軸上向き、小数4桁）。単位は `$INSUNITS = 4`（mm）を指定
+- 画層：白黒は `CONTOUR`、カラーは出力する色ごとに `COLOR_01`、`COLOR_02`…（番号は「出力する色」の「色 n」と同じ）。画層の色は元の色に近い AutoCAD の基本色
+- 折れ線として出力するため、読み込み方式（Polyline）の設定は DXF には影響しない
 - 改行コードは CRLF
 
 ## ファイル構成

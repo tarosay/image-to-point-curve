@@ -51,6 +51,7 @@
   <aside class="panel">
     <div class="actions">
       <button class="primary full" id="downloadTxt" disabled>point curve (.txt) をダウンロード</button>
+      <button class="full" id="downloadDxf" disabled>DXF (.dxf) をダウンロード</button>
       <button id="chooseFile">画像を選択</button>
       <button id="reset">初期値に戻す</button>
     </div>
@@ -170,7 +171,7 @@
 </main>
 
 <footer class="footer">
-  出力形式：先頭行 <code>Polyline=True</code>、各点 <code>0 X Y</code>（mm）。複数の輪郭は空行で区切り、各閉曲線の最後に始点を再出力します。
+  出力形式：先頭行 <code>Polyline=True</code>、各点 <code>0 X Y</code>（mm）。複数の輪郭は空行で区切り、各閉曲線の最後に始点を再出力します。DXF は R12 形式で、各輪郭を閉じたポリラインとして出力します（単位 mm、色ごとに画層を分けます）。
 </footer>
 
 <script src="topology.js"></script>

@@ -469,7 +469,7 @@ function runPending() {
   } catch (e) {
     console.error(e);
     setStatus('処理できませんでした：' + e.message, true);
-    $('downloadTxt').disabled = true;
+    $('downloadTxt').disabled = $('downloadDxf').disabled = true;
   }
 }
 
@@ -482,7 +482,7 @@ function showInfo() {
   const nLoops = S.loops.length, nPts = S.loops.reduce((a, l) => a + l.p.length / 2 + 1, 0);
   const holes = S.loops.filter(l => l.hole).length;
   $('resultInfo').textContent = `${nLoops} 本・${nPts.toLocaleString()} 点`;
-  $('downloadTxt').disabled = nLoops === 0;
+  $('downloadTxt').disabled = $('downloadDxf').disabled = nLoops === 0;
   if (!nLoops) { setStatus('輪郭が見つかりません。しきい値・出力する色・ノイズ除去の設定を見直してください。', true); return; }
   const b = outBounds();
   const size = circleMode()
@@ -680,6 +680,65 @@ function txtString() {
   return `Polyline=${$('txtPolyline').value === 'true' ? 'True' : 'False'}\r\n` + blocks.join('\r\n\r\n') + '\r\n';
 }
 
+// DXF（R12 / AC1009 の ASCII 形式）。互換性を優先し、各輪郭を閉じた POLYLINE として出力する。
+// 単位は mm（$INSUNITS=4）。カラーでは出力する色ごとに画層を分ける。
+function dxfString() {
+  const f = mmMapper(), mono = $('mode').value === 'mono';
+  const layerOf = label => mono ? 'CONTOUR' : `COLOR_${String(label + 1).padStart(2, '0')}`;
+  const labels = [...new Set(S.loops.map(l => l.label))].sort((a, b) => a - b);
+  const out = [];
+  const g = (code, v) => out.push(String(code), String(v));
+  const num = v => v.toFixed(4);
+  const b = outBounds();
+
+  g(0, 'SECTION'); g(2, 'HEADER');
+  g(9, '$ACADVER'); g(1, 'AC1009');
+  g(9, '$INSUNITS'); g(70, 4);
+  g(9, '$MEASUREMENT'); g(70, 1);
+  g(9, '$EXTMIN'); g(10, num(b.minX)); g(20, num(b.minY)); g(30, '0.0');
+  g(9, '$EXTMAX'); g(10, num(b.maxX)); g(20, num(b.maxY)); g(30, '0.0');
+  g(0, 'ENDSEC');
+
+  g(0, 'SECTION'); g(2, 'TABLES');
+  g(0, 'TABLE'); g(2, 'LTYPE'); g(70, 1);
+  g(0, 'LTYPE'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, '0.0');
+  g(0, 'ENDTAB');
+  g(0, 'TABLE'); g(2, 'LAYER'); g(70, labels.length + 1);
+  g(0, 'LAYER'); g(2, '0'); g(70, 0); g(62, 7); g(6, 'CONTINUOUS');
+  for (const label of labels) {
+    g(0, 'LAYER'); g(2, layerOf(label)); g(70, 0); g(62, mono ? 7 : aciOf(S.palette[label].rgb)); g(6, 'CONTINUOUS');
+  }
+  g(0, 'ENDTAB');
+  g(0, 'ENDSEC');
+
+  g(0, 'SECTION'); g(2, 'ENTITIES');
+  for (const l of S.loops) {
+    const layer = layerOf(l.label);
+    g(0, 'POLYLINE'); g(8, layer); g(66, 1); g(10, '0.0'); g(20, '0.0'); g(30, '0.0'); g(70, 1);
+    for (let i = 0; i < l.p.length; i += 2) {
+      const [X, Y] = f(l.p[i], l.p[i + 1]);
+      g(0, 'VERTEX'); g(8, layer); g(10, num(X)); g(20, num(Y)); g(30, '0.0');
+    }
+    g(0, 'SEQEND'); g(8, layer);
+  }
+  g(0, 'ENDSEC');
+  g(0, 'EOF');
+  return out.join('\r\n') + '\r\n';
+}
+
+// 画層の色：AutoCAD 色番号（ACI）の基本色から最も近いものを選ぶ。
+// 白に近い色は、背景が白でも黒でも見える 7（白／黒）にする。
+const ACI = [[1, [255, 0, 0]], [2, [255, 255, 0]], [3, [0, 255, 0]], [4, [0, 255, 255]], [5, [0, 0, 255]],
+  [6, [255, 0, 255]], [7, [255, 255, 255]], [7, [0, 0, 0]], [8, [128, 128, 128]], [9, [192, 192, 192]]];
+function aciOf(rgb) {
+  let best = 7, bd = Infinity;
+  for (const [n, c] of ACI) {
+    const d = (c[0] - rgb[0]) ** 2 + (c[1] - rgb[1]) ** 2 + (c[2] - rgb[2]) ** 2;
+    if (d < bd) { bd = d; best = n; }
+  }
+  return best;
+}
+
 function download(name, text) {
   const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob), a = document.createElement('a');
@@ -744,11 +803,13 @@ $('outD').addEventListener('input', () => { if (S.img) showInfo(); });
 $('outW').addEventListener('input', () => { syncHeightFromWidth(); if (S.img) showInfo(); });
 $('outH').addEventListener('input', () => { syncWidthFromHeight(); if (S.img) showInfo(); });
 $('reset').addEventListener('click', () => { applyDefaults(); if (S.img) process(1); });
-$('downloadTxt').addEventListener('click', () => {
-  if (!S.loops.length) return;
+function outputReady() {
+  if (!S.loops.length) return false;
   const ok = circleMode() ? Number($('outD').value) > 0 : Number($('outW').value) > 0 && Number($('outH').value) > 0;
-  if (!ok) { setStatus('出力サイズには正の値を入力してください。', true); return; }
-  download(`${S.name}_point_curve.txt`, txtString());
-});
+  if (!ok) setStatus('出力サイズには正の値を入力してください。', true);
+  return ok;
+}
+$('downloadTxt').addEventListener('click', () => { if (outputReady()) download(`${S.name}_point_curve.txt`, txtString()); });
+$('downloadDxf').addEventListener('click', () => { if (outputReady()) download(`${S.name}.dxf`, dxfString()); });
 
 applyDefaults();
